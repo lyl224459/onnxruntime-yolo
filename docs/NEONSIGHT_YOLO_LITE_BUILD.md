@@ -19,13 +19,15 @@
 - 推送 `yolo-lite-v*` 标签：自动构建并发布 GitHub Release。
 - 手动运行 workflow：可只生成 artifact，也可填写 `release_tag` 并启用 `publish_release` 发布 Release。
 
-默认 GitHub 托管 Windows runner 会构建 CPU install-root 制品。CUDA 精简版需要带 CUDA / cuDNN 的 Windows self-hosted runner，并在仓库变量中设置：
+默认会先尝试构建 CUDA YOLO 精简版。如果 CUDA 环境不存在、依赖检查失败、编译失败或打包失败，workflow 会继续执行 CPU install-root 兜底构建，并把成功的制品发布到 Release。
 
-- `ORT_YOLO_BUILD_CUDA=true`
-- self-hosted runner 标签包含 `self-hosted`、`Windows`、`X64`、`CUDA`
+未配置自托管 runner 时，CUDA job 会在 GitHub 托管 Windows runner 上快速完成环境检查；由于托管 runner 通常没有 CUDA / cuDNN，它会转入 CPU 兜底。若要真正产出 CUDA 制品，需要配置带 CUDA / cuDNN 的 Windows self-hosted runner，并在仓库变量中设置：
+
+- `ORT_YOLO_CUDA_RUNNER_LABELS=["self-hosted","Windows","X64","CUDA"]`
+- 可选：`ORT_YOLO_CUDA_ARCHITECTURES=86;89;120`
 - runner 环境中存在 `CUDA_PATH` 和 `CUDNN_HOME`
 
-手动运行 workflow 时，也可以勾选 `build_cuda` 来显式触发 CUDA job。
+手动运行 workflow 时，可以通过 `cuda_architectures` 输入覆盖本次 CUDA 架构列表。
 
 ## 本地构建示例
 

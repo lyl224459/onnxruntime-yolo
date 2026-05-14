@@ -12,15 +12,10 @@ on:
         default: false
         type: boolean
       release_tag:
-        description: "手动发布使用的 tag，例如 yolo-lite-v1.27.0-1；留空则只上传 artifact"
+        description: "手动发布使用的 tag，例如 yolo-lite-v1.27.0-2；留空则只上传 artifact"
         required: false
         default: ""
         type: string
-      build_cuda:
-        description: "在 self-hosted CUDA runner 上构建 CUDA YOLO 精简版"
-        required: true
-        default: false
-        type: boolean
       cuda_architectures:
         description: "CUDA 架构列表"
         required: true
@@ -37,6 +32,8 @@ concurrency:
 jobs:
   build-cpu-windows:
     name: Windows CPU install-root
+    needs: build-cuda-windows
+    if: ${{ always() && needs.build-cuda-windows.outputs.cuda_success != 'true' }}
     runs-on: windows-2022
     timeout-minutes: 360
 
@@ -104,9 +101,10 @@ jobs:
 
   build-cuda-windows:
     name: Windows CUDA YOLO lite install-root
-    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.build_cuda) || vars.ORT_YOLO_BUILD_CUDA == 'true' }}
-    runs-on: [self-hosted, Windows, X64, CUDA]
+    runs-on: ${{ fromJSON(vars.ORT_YOLO_CUDA_RUNNER_LABELS || '["windows-2022"]') }}
     timeout-minutes: 720
+    outputs:
+      cuda_success: ${{ steps.cuda_result.outputs.cuda_success }}
 
     steps:
       - name: Checkout
@@ -121,6 +119,8 @@ jobs:
           architecture: x64
 
       - name: Check CUDA/cuDNN environment
+        id: cuda_env
+        continue-on-error: true
         shell: pwsh
         run: |
           if ([string]::IsNullOrWhiteSpace($env:CUDA_PATH) -or -not (Test-Path -LiteralPath $env:CUDA_PATH -PathType Container)) {
@@ -133,16 +133,25 @@ jobs:
           Write-Host "CUDNN_HOME=$env:CUDNN_HOME"
 
       - name: Install build Python dependencies
+        id: cuda_deps
+        if: ${{ steps.cuda_env.outcome == 'success' }}
+        continue-on-error: true
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r .\tools\ci_build\github\windows\python\requirements.txt
 
       - name: Build CUDA YOLO lite shared library
+        id: cuda_build
+        if: ${{ steps.cuda_deps.outcome == 'success' }}
+        continue-on-error: true
         shell: pwsh
         run: |
           $buildDir = Join-Path $env:RUNNER_TEMP "ort-build-cuda"
-          $cudaArchitectures = if ("${{ github.event_name }}" -eq "workflow_dispatch") { "${{ inputs.cuda_architectures }}" } else { "86;89;120" }
+          $cudaArchitectures = if ("${{ github.event_name }}" -eq "workflow_dispatch") { "${{ inputs.cuda_architectures }}" } else { "${{ vars.ORT_YOLO_CUDA_ARCHITECTURES }}" }
+          if ([string]::IsNullOrWhiteSpace($cudaArchitectures)) {
+            $cudaArchitectures = "86;89;120"
+          }
           $buildArgs = @(
             "tools\ci_build\build.py",
             "--update",
@@ -176,6 +185,9 @@ jobs:
           python @buildArgs
 
       - name: Package CUDA install-root
+        id: cuda_package
+        if: ${{ steps.cuda_build.outcome == 'success' }}
+        continue-on-error: true
         shell: pwsh
         run: |
           $buildDir = Join-Path $env:RUNNER_TEMP "ort-build-cuda"
@@ -189,15 +201,38 @@ jobs:
           "ORT_YOLO_ARTIFACT_DIR=$artifactDir" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload CUDA artifact
+        id: cuda_upload
+        if: ${{ steps.cuda_package.outcome == 'success' }}
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: onnxruntime-yolo-lite-win-x64-cuda
           path: ${{ env.ORT_YOLO_ARTIFACT_DIR }}/*
 
+      - name: Set CUDA fallback result
+        id: cuda_result
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          $outcomes = @(
+            "${{ steps.cuda_env.outcome }}",
+            "${{ steps.cuda_deps.outcome }}",
+            "${{ steps.cuda_build.outcome }}",
+            "${{ steps.cuda_package.outcome }}",
+            "${{ steps.cuda_upload.outcome }}"
+          )
+          $success = -not ($outcomes | Where-Object { $_ -ne "success" })
+          "cuda_success=$($success.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          if ($success) {
+            Write-Host "CUDA YOLO 精简版构建成功。"
+          } else {
+            Write-Warning "CUDA YOLO 精简版未完成，将继续执行 CPU 兜底构建。步骤状态: $($outcomes -join ', ')"
+          }
+
   release:
     name: Publish GitHub Release
     needs: [build-cpu-windows, build-cuda-windows]
-    if: ${{ always() && needs.build-cpu-windows.result == 'success' && (needs.build-cuda-windows.result == 'success' || needs.build-cuda-windows.result == 'skipped') && (startsWith(github.ref, 'refs/tags/yolo-lite-v') || (github.event_name == 'workflow_dispatch' && inputs.publish_release && inputs.release_tag != '')) }}
+    if: ${{ always() && (needs.build-cuda-windows.outputs.cuda_success == 'true' || needs.build-cpu-windows.result == 'success') && (startsWith(github.ref, 'refs/tags/yolo-lite-v') || (github.event_name == 'workflow_dispatch' && inputs.publish_release && inputs.release_tag != '')) }}
     runs-on: ubuntu-latest
 
     steps:
@@ -218,11 +253,14 @@ jobs:
             echo
             echo "- Source commit: ${GITHUB_SHA}"
             echo "- Tag: ${tag_name}"
-            echo "- CPU install-root: included"
-            if [ "${{ needs.build-cuda-windows.result }}" = "success" ]; then
+            if [ "${{ needs.build-cuda-windows.outputs.cuda_success }}" = "true" ]; then
               echo "- CUDA YOLO lite install-root: included"
+              echo "- CPU install-root: not built because CUDA succeeded"
+            elif [ "${{ needs.build-cpu-windows.result }}" = "success" ]; then
+              echo "- CUDA YOLO lite install-root: failed or unavailable"
+              echo "- CPU install-root: included as fallback"
             else
-              echo "- CUDA YOLO lite install-root: not built in this run"
+              echo "- No install-root artifact was produced"
             fi
             echo
             echo "Assets contain an include/lib/bin install-root layout and BUILD_INFO.json."
