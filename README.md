@@ -67,6 +67,8 @@ The workflow tries CUDA first:
 4. If any CUDA step fails, build the CPU install-root package instead.
 5. Publish the successful artifact set to GitHub Releases.
 
+The default CUDA installer path uses a reduced component list for faster CI setup. If that component install fails, the script automatically retries with the full CUDA silent installer. A custom component list can still be forced through `ORT_YOLO_CUDA_INSTALL_COMPONENTS`.
+
 Useful repository variables:
 
 ```text

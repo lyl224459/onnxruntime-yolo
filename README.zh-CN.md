@@ -67,6 +67,8 @@ workflow 会优先尝试 CUDA：
 4. 如果任意 CUDA 步骤失败，继续构建 CPU install-root 兜底包。
 5. 将成功产出的制品发布到 GitHub Releases。
 
+默认 CUDA 安装路径会使用精简组件列表来缩短 CI 准备时间。如果组件化安装失败，脚本会自动退回完整 CUDA silent 安装。仍可通过 `ORT_YOLO_CUDA_INSTALL_COMPONENTS` 强制指定自定义组件列表。
+
 可用仓库变量：
 
 ```text

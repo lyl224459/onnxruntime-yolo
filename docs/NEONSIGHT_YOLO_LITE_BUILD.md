@@ -21,6 +21,8 @@
 
 默认会先尝试构建 CUDA YOLO 精简版。CUDA job 会先复用 runner 上已有的 CUDA / cuDNN；如果缺失，则自动下载并安装 CUDA Toolkit 13.0.2 网络安装器和 cuDNN 9.17 CUDA 13 redist zip。若 CUDA 环境准备、依赖安装、编译、打包或上传任一步失败，workflow 会继续执行 CPU install-root 兜底构建，并把成功的制品发布到 Release。
 
+CUDA 自动安装默认使用精简组件列表，以减少 GitHub runner 的下载和安装时间。如果默认组件化安装失败，脚本会自动退回完整 CUDA silent 安装。需要强制指定组件时，可设置 `ORT_YOLO_CUDA_INSTALL_COMPONENTS` 仓库变量。
+
 未配置自托管 runner 时，CUDA job 会在 GitHub 托管 Windows runner 上尝试在线安装 CUDA / cuDNN 并编译 CUDA 制品。该路径可以做编译发布，但不能替代真实 GPU 推理验收；若要做真实 GPU 验证，仍建议配置带 NVIDIA GPU 的 Windows self-hosted runner，并在仓库变量中设置：
 
 - `ORT_YOLO_CUDA_RUNNER_LABELS=["self-hosted","Windows","X64","CUDA"]`

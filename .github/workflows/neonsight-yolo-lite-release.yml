@@ -12,7 +12,7 @@ on:
         default: false
         type: boolean
       release_tag:
-        description: "手动发布使用的 tag，例如 yolo-lite-v1.27.0-2；留空则只上传 artifact"
+        description: "手动发布使用的 tag，例如 yolo-lite-v1.27.0-4；留空则只上传 artifact"
         required: false
         default: ""
         type: string
@@ -122,6 +122,8 @@ jobs:
         id: cuda_env
         continue-on-error: true
         shell: pwsh
+        env:
+          ORT_YOLO_CUDA_INSTALL_COMPONENTS: ${{ vars.ORT_YOLO_CUDA_INSTALL_COMPONENTS }}
         run: |
           $cudaVersion = "${{ vars.ORT_YOLO_CUDA_VERSION }}"
           if ([string]::IsNullOrWhiteSpace($cudaVersion)) {

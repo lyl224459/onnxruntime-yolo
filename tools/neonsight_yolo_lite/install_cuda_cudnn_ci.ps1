@@ -118,6 +118,7 @@ function Install-CudaToolkit {
   Invoke-DownloadWithRetry -Uri $InstallerUrl -OutFile $installerPath
 
   $componentText = $env:ORT_YOLO_CUDA_INSTALL_COMPONENTS
+  $useDefaultComponents = [string]::IsNullOrWhiteSpace($componentText)
   if ([string]::IsNullOrWhiteSpace($componentText)) {
     # 只安装 ORT CUDA Provider 编译所需的核心工具链和数学库，避免 CI 拉取不必要的 Nsight/文档组件。
     $componentText = @(
@@ -133,7 +134,6 @@ function Install-CudaToolkit {
       "cufft_dev_$CudaMajorMinor",
       "curand_$CudaMajorMinor",
       "curand_dev_$CudaMajorMinor",
-      "culibos_$CudaMajorMinor",
       "nvtx_$CudaMajorMinor",
       "nvml_dev_$CudaMajorMinor",
       "nvvm_$CudaMajorMinor",
@@ -148,6 +148,13 @@ function Install-CudaToolkit {
 
   $process = Start-Process -FilePath $installerPath -ArgumentList $arguments -Wait -PassThru -NoNewWindow
   if (@(0, 3010) -notcontains $process.ExitCode) {
+    if ($useDefaultComponents) {
+      Write-Warning "CUDA 组件化安装失败，返回代码: $($process.ExitCode)。将自动退回完整 CUDA silent 安装。"
+      $process = Start-Process -FilePath $installerPath -ArgumentList @("-s") -Wait -PassThru -NoNewWindow
+      if (@(0, 3010) -contains $process.ExitCode) {
+        return
+      }
+    }
     throw "CUDA 安装器返回失败代码: $($process.ExitCode)"
   }
 }
