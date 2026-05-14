@@ -262,6 +262,7 @@ jobs:
           )
           $defines = @(
             "CMAKE_CUDA_ARCHITECTURES=$cudaArchitectures",
+            "CMAKE_CUDA_FLAGS=-allow-unsupported-compiler -Xcompiler=/Zc:preprocessor -DCCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING",
             "onnxruntime_NEONSIGHT_YOLO_LITE=ON",
             "onnxruntime_USE_FLASH_ATTENTION=OFF",
             "onnxruntime_USE_LEAN_ATTENTION=OFF",
