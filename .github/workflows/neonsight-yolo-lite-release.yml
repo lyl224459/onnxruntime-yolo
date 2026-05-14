@@ -240,6 +240,7 @@ jobs:
             $cudaVersion = "13.0"
           }
           $cudaMajorMinor = ($cudaVersion -split '\.')[0..1] -join '.'
+          $cudaToolkitDir = ([System.IO.DirectoryInfo]$env:CUDA_PATH).FullName.Replace("\", "/")
           $buildArgs = @(
             "tools\ci_build\build.py",
             "--update",
@@ -252,7 +253,6 @@ jobs:
             "--cmake_generator", "Visual Studio 17 2022",
             "--build_shared_lib",
             "--use_cuda",
-            "--cuda_version", $cudaMajorMinor,
             "--cuda_home", $env:CUDA_PATH,
             "--cudnn_home", $env:CUDNN_HOME,
             "--disable_cuda_nhwc_ops",
@@ -262,7 +262,9 @@ jobs:
           )
           $defines = @(
             "CMAKE_CUDA_ARCHITECTURES=$cudaArchitectures",
+            "CMAKE_VS_GLOBALS=UseMultiToolTask=true;EnforceProcessCountAcrossBuilds=true;CudaToolkitDir=$cudaToolkitDir",
             "CMAKE_CUDA_FLAGS=-allow-unsupported-compiler -Xcompiler=/Zc:preprocessor -DCCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING",
+            "onnxruntime_CUDA_VERSION=$cudaMajorMinor",
             "onnxruntime_NEONSIGHT_YOLO_LITE=ON",
             "onnxruntime_USE_FLASH_ATTENTION=OFF",
             "onnxruntime_USE_LEAN_ATTENTION=OFF",

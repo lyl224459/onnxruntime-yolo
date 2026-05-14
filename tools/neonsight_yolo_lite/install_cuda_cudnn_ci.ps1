@@ -65,6 +65,20 @@ function Add-CiPathValue {
   }
 }
 
+function Format-MsBuildDirectory {
+  param([string]$PathValue)
+
+  if ([string]::IsNullOrWhiteSpace($PathValue)) {
+    return ""
+  }
+
+  $fullPath = ([System.IO.DirectoryInfo][Environment]::ExpandEnvironmentVariables($PathValue)).FullName
+  if (-not $fullPath.EndsWith("\")) {
+    $fullPath += "\"
+  }
+  return $fullPath
+}
+
 function Get-CudaHomeMajorMinor {
   param([string]$CudaHome)
 
@@ -299,12 +313,12 @@ function Install-CudaToolkit {
   $componentText = $env:ORT_YOLO_CUDA_INSTALL_COMPONENTS
   $useDefaultComponents = [string]::IsNullOrWhiteSpace($componentText)
   if ([string]::IsNullOrWhiteSpace($componentText)) {
-    # 只安装 ORT CUDA Provider 编译所需的核心工具链和数学库，避免 CI 拉取不必要的 Nsight/文档组件。
+    # 只安装 ORT CUDA Provider 编译所需的官方 silent installer 子包，避免 CI 拉取不必要的 Nsight/文档组件。
     $componentText = @(
-      "cccl_$CudaMajorMinor",
       "crt_$CudaMajorMinor",
       "cudart_$CudaMajorMinor",
       "nvcc_$CudaMajorMinor",
+      "thrust_$CudaMajorMinor",
       "nvrtc_$CudaMajorMinor",
       "nvrtc_dev_$CudaMajorMinor",
       "cublas_$CudaMajorMinor",
@@ -621,6 +635,7 @@ if (-not (Test-CudnnHome -Candidate $cudnnHome -CudaMajorMinor $cudaMajorMinor))
 
 Set-CiEnvironmentValue -Name "CUDA_PATH" -Value $cudaHome
 Set-CiEnvironmentValue -Name "CUDA_HOME" -Value $cudaHome
+Set-CiEnvironmentValue -Name "CudaToolkitDir" -Value (Format-MsBuildDirectory -PathValue $cudaHome)
 Set-CiEnvironmentValue -Name "CUDNN_HOME" -Value $cudnnHome
 Set-CiEnvironmentValue -Name "CUDNN_PATH" -Value $cudnnHome
 Add-CiPathValue -PathValue (Join-Path $cudaHome "bin")
