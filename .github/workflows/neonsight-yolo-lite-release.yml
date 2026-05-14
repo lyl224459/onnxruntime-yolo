@@ -25,6 +25,9 @@ on:
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 concurrency:
   group: neonsight-yolo-lite-${{ github.ref }}
   cancel-in-progress: false
@@ -39,12 +42,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: false
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           architecture: x64
@@ -94,7 +97,7 @@ jobs:
           "ORT_YOLO_ARTIFACT_DIR=$artifactDir" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload CPU artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: onnxruntime-yolo-lite-win-x64-cpu
           path: ${{ env.ORT_YOLO_ARTIFACT_DIR }}/*
@@ -108,12 +111,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: false
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           architecture: x64
@@ -154,6 +157,70 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r .\tools\ci_build\github\windows\python\requirements.txt
 
+      - name: Print CUDA build environment
+        if: ${{ steps.cuda_deps.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          function Invoke-OptionalNativeCommand {
+            param(
+              [string]$Command,
+              [string[]]$Arguments = @()
+            )
+
+            try {
+              & $Command @Arguments
+              if ($LASTEXITCODE -ne 0) {
+                Write-Warning "$Command $($Arguments -join ' ') 返回代码 $LASTEXITCODE"
+              }
+            } catch {
+              Write-Warning "$Command $($Arguments -join ' ') 执行失败: $($_.Exception.Message)"
+            }
+          }
+
+          Write-Host "CUDA_PATH=$env:CUDA_PATH"
+          Write-Host "CUDNN_HOME=$env:CUDNN_HOME"
+          Write-Host "PATH=$env:PATH"
+          Invoke-OptionalNativeCommand -Command "cmake" -Arguments @("--version")
+          Invoke-OptionalNativeCommand -Command "where.exe" -Arguments @("cmake")
+          Invoke-OptionalNativeCommand -Command "where.exe" -Arguments @("nvcc")
+          Invoke-OptionalNativeCommand -Command "nvcc" -Arguments @("--version")
+          Invoke-OptionalNativeCommand -Command "where.exe" -Arguments @("cl")
+
+          $vsRoots = @()
+          $vswhereCandidates = @(
+            (Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"),
+            (Join-Path $env:ProgramFiles "Microsoft Visual Studio\Installer\vswhere.exe")
+          )
+          $vswhere = $vswhereCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+          if ($vswhere) {
+            $vsRoots += & $vswhere -all -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          }
+          $vsRoots += @($env:ProgramW6432, $env:ProgramFiles, ${env:ProgramFiles(x86)}) |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            ForEach-Object { Join-Path $_ "Microsoft Visual Studio" } |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Container } |
+            ForEach-Object {
+              Get-ChildItem -LiteralPath $_ -Directory -ErrorAction SilentlyContinue |
+                ForEach-Object {
+                  Get-ChildItem -LiteralPath $_.FullName -Directory -ErrorAction SilentlyContinue |
+                    Select-Object -ExpandProperty FullName
+                }
+            }
+
+          $cudaTargets = @($vsRoots | Select-Object -Unique | ForEach-Object {
+            $buildCustomizationsRoot = Join-Path $_ "MSBuild\Microsoft\VC"
+            if (Test-Path -LiteralPath $buildCustomizationsRoot -PathType Container) {
+              Get-ChildItem -LiteralPath $buildCustomizationsRoot -Recurse -Filter "CUDA *.targets" -File -ErrorAction SilentlyContinue |
+                Select-Object -ExpandProperty FullName
+            }
+          } | Select-Object -First 20)
+          if ($cudaTargets) {
+            Write-Host "Visual Studio CUDA targets:"
+            $cudaTargets | ForEach-Object { Write-Host $_ }
+          } else {
+            Write-Warning "未找到 Visual Studio CUDA targets，CMake Visual Studio CUDA toolset 可能无法配置。"
+          }
+
       - name: Build CUDA YOLO lite shared library
         id: cuda_build
         if: ${{ steps.cuda_deps.outcome == 'success' }}
@@ -165,6 +232,14 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($cudaArchitectures)) {
             $cudaArchitectures = "86;89;120"
           }
+          $cudaVersion = "${{ steps.cuda_env.outputs.cuda_version }}"
+          if ([string]::IsNullOrWhiteSpace($cudaVersion)) {
+            $cudaVersion = "${{ vars.ORT_YOLO_CUDA_VERSION }}"
+          }
+          if ([string]::IsNullOrWhiteSpace($cudaVersion)) {
+            $cudaVersion = "13.0"
+          }
+          $cudaMajorMinor = ($cudaVersion -split '\.')[0..1] -join '.'
           $buildArgs = @(
             "tools\ci_build\build.py",
             "--update",
@@ -177,25 +252,45 @@ jobs:
             "--cmake_generator", "Visual Studio 17 2022",
             "--build_shared_lib",
             "--use_cuda",
+            "--cuda_version", $cudaMajorMinor,
             "--cuda_home", $env:CUDA_PATH,
-            "--cudnn_home", $env:CUDNN_HOME
+            "--cudnn_home", $env:CUDNN_HOME,
+            "--disable_cuda_nhwc_ops",
+            "--disable_types", "float8", "float4",
+            "--no_kleidiai",
+            "--no_sve"
           )
           $defines = @(
             "CMAKE_CUDA_ARCHITECTURES=$cudaArchitectures",
-            "CMAKE_CUDA_FLAGS=-Xcompiler=/Zc:preprocessor -DCCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING",
             "onnxruntime_NEONSIGHT_YOLO_LITE=ON",
             "onnxruntime_USE_FLASH_ATTENTION=OFF",
             "onnxruntime_USE_LEAN_ATTENTION=OFF",
             "onnxruntime_USE_MEMORY_EFFICIENT_ATTENTION=OFF",
-            "onnxruntime_USE_FP8_KV_CACHE=OFF",
-            "onnxruntime_USE_CUDA_NHWC_OPS=OFF",
-            "onnxruntime_DISABLE_FLOAT8_TYPES=ON",
-            "onnxruntime_DISABLE_FLOAT4_TYPES=ON"
+            "onnxruntime_USE_FP8_KV_CACHE=OFF"
           )
           foreach ($define in $defines) {
             $buildArgs += @("--cmake_extra_defines", $define)
           }
+          Write-Host "CUDA YOLO lite build.py 参数:"
+          $buildArgs | ForEach-Object { Write-Host "  $_" }
           python @buildArgs
+
+      - name: Print CUDA CMake diagnostics
+        if: ${{ steps.cuda_build.outcome != 'success' }}
+        shell: pwsh
+        run: |
+          $buildDir = Join-Path $env:RUNNER_TEMP "ort-build-cuda"
+          $diagnosticFiles = @(
+            Join-Path $buildDir "Release\CMakeFiles\CMakeError.log",
+            Join-Path $buildDir "Release\CMakeFiles\CMakeOutput.log",
+            Join-Path $buildDir "Release\CMakeCache.txt"
+          )
+          foreach ($file in $diagnosticFiles) {
+            if (Test-Path -LiteralPath $file -PathType Leaf) {
+              Write-Host "===== $file ====="
+              Get-Content -LiteralPath $file -Tail 220
+            }
+          }
 
       - name: Package CUDA install-root
         id: cuda_package
@@ -217,7 +312,7 @@ jobs:
         id: cuda_upload
         if: ${{ steps.cuda_package.outcome == 'success' }}
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: onnxruntime-yolo-lite-win-x64-cuda
           path: ${{ env.ORT_YOLO_ARTIFACT_DIR }}/*
@@ -250,7 +345,7 @@ jobs:
 
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: release-assets
 
