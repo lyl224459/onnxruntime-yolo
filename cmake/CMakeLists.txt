@@ -164,6 +164,7 @@ option(onnxruntime_DISABLE_SPARSE_TENSORS "Disable sparse tensors data types" OF
 option(onnxruntime_DISABLE_OPTIONAL_TYPE "Disable optional type" OFF)
 option(onnxruntime_DISABLE_FLOAT8_TYPES "Disable float 8 types" OFF)
 option(onnxruntime_DISABLE_FLOAT4_TYPES "Disable float 4 types" OFF)
+option(onnxruntime_NEONSIGHT_YOLO_LITE "Build a YOLO-focused CUDA provider subset for NeonSight/YOLO detection workloads" OFF)
 option(onnxruntime_DISABLE_STRING_TYPE "Disable string type" OFF)
 option(onnxruntime_MINIMAL_BUILD "Exclude as much as possible from the build. Support ORT format models. No support for ONNX format models." OFF)
 option(onnxruntime_CLIENT_PACKAGE_BUILD "Enables default settings that are more appropriate for client/on-device workloads." OFF)

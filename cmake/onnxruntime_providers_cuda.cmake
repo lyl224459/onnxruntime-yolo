@@ -51,6 +51,21 @@
   endif()
   # Exclude plugin directory if it was picked up by GLOB_RECURSE
   list(FILTER onnxruntime_providers_cuda_cu_srcs EXCLUDE REGEX "core/providers/cuda/plugin/.*")
+
+  # NeonSight YOLO lite source filter
+  # YOLO 检测只需要标准图像算子，移除 LLM/Attention 与 Triton 训练内核可减少 CUDA 13
+  # 新架构上的编译和初始化风险。完整 Provider 可关闭 onnxruntime_NEONSIGHT_YOLO_LITE 恢复。
+  if (onnxruntime_NEONSIGHT_YOLO_LITE)
+    add_compile_definitions(NEONSIGHT_YOLO_LITE)
+    list(FILTER onnxruntime_providers_cuda_cc_srcs EXCLUDE REGEX "core/providers/cuda/llm/.*")
+    list(FILTER onnxruntime_providers_cuda_cu_srcs EXCLUDE REGEX "core/providers/cuda/llm/.*")
+    list(REMOVE_ITEM onnxruntime_providers_cuda_cc_srcs
+      "${ONNXRUNTIME_ROOT}/core/providers/cuda/triton_kernel.h"
+    )
+    list(REMOVE_ITEM onnxruntime_providers_cuda_cu_srcs
+      "${ONNXRUNTIME_ROOT}/core/providers/cuda/triton_kernel.cu"
+    )
+  endif()
   source_group(TREE ${ONNXRUNTIME_ROOT}/core FILES ${onnxruntime_providers_cuda_cc_srcs} ${onnxruntime_providers_cuda_shared_srcs} ${onnxruntime_providers_cuda_cu_srcs})
   set(onnxruntime_providers_cuda_src ${onnxruntime_providers_cuda_cc_srcs} ${onnxruntime_providers_cuda_shared_srcs} ${onnxruntime_providers_cuda_cu_srcs})
 

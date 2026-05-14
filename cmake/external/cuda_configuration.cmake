@@ -184,7 +184,9 @@ macro(setup_cuda_architectures)
   endforeach()
 
   # Enable accelerated features (like WGMMA, TMA and setmaxnreg) for SM >= 90.
-  set(ARCHITECTURES_WITH_ACCEL "90" "100" "101" "110" "120")
+  # RTX 50 系消费卡报告 compute capability 12.0；这里保持 sm_120-real，
+  # 避免把 CMAKE_CUDA_ARCHITECTURES=120 规范化为只适合 Blackwell 加速特性的 sm_120a-real。
+  set(ARCHITECTURES_WITH_ACCEL "90" "100" "101" "110")
   unset(CMAKE_CUDA_ARCHITECTURES_NORMALIZED)
   foreach(CUDA_ARCH IN LISTS CMAKE_CUDA_ARCHITECTURES)
     if(CUDA_ARCH MATCHES "^([0-9]+)f$")

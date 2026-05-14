@@ -1,0 +1,246 @@
+name: NeonSight YOLO Lite Release
+
+on:
+  push:
+    tags:
+      - "yolo-lite-v*"
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "发布 GitHub Release"
+        required: true
+        default: false
+        type: boolean
+      release_tag:
+        description: "手动发布使用的 tag，例如 yolo-lite-v1.27.0-1；留空则只上传 artifact"
+        required: false
+        default: ""
+        type: string
+      build_cuda:
+        description: "在 self-hosted CUDA runner 上构建 CUDA YOLO 精简版"
+        required: true
+        default: false
+        type: boolean
+      cuda_architectures:
+        description: "CUDA 架构列表"
+        required: true
+        default: "86;89;120"
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: neonsight-yolo-lite-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-cpu-windows:
+    name: Windows CPU install-root
+    runs-on: windows-2022
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: x64
+
+      - name: Install build Python dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r .\tools\ci_build\github\windows\python\requirements.txt
+
+      - name: Build CPU shared library
+        shell: pwsh
+        run: |
+          $buildDir = Join-Path $env:RUNNER_TEMP "ort-build-cpu"
+          $buildArgs = @(
+            "tools\ci_build\build.py",
+            "--update",
+            "--build",
+            "--config", "Release",
+            "--build_dir", $buildDir,
+            "--skip_tests",
+            "--parallel",
+            "--cmake_generator", "Visual Studio 17 2022",
+            "--build_shared_lib"
+          )
+          $defines = @(
+            "onnxruntime_DISABLE_ML_OPS=ON",
+            "onnxruntime_DISABLE_FLOAT8_TYPES=ON",
+            "onnxruntime_DISABLE_FLOAT4_TYPES=ON"
+          )
+          foreach ($define in $defines) {
+            $buildArgs += @("--cmake_extra_defines", $define)
+          }
+          python @buildArgs
+
+      - name: Package CPU install-root
+        shell: pwsh
+        run: |
+          $buildDir = Join-Path $env:RUNNER_TEMP "ort-build-cpu"
+          $artifactDir = Join-Path $env:RUNNER_TEMP "ort-artifacts"
+          pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\neonsight_yolo_lite\package_ort_install_root.ps1 `
+            -BuildDir $buildDir `
+            -SourceRoot $env:GITHUB_WORKSPACE `
+            -OutputDir $artifactDir `
+            -PackageName "onnxruntime-yolo-lite-win-x64-cpu" `
+            -PackageKind cpu
+          "ORT_YOLO_ARTIFACT_DIR=$artifactDir" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload CPU artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: onnxruntime-yolo-lite-win-x64-cpu
+          path: ${{ env.ORT_YOLO_ARTIFACT_DIR }}/*
+
+  build-cuda-windows:
+    name: Windows CUDA YOLO lite install-root
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.build_cuda) || vars.ORT_YOLO_BUILD_CUDA == 'true' }}
+    runs-on: [self-hosted, Windows, X64, CUDA]
+    timeout-minutes: 720
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: x64
+
+      - name: Check CUDA/cuDNN environment
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CUDA_PATH) -or -not (Test-Path -LiteralPath $env:CUDA_PATH -PathType Container)) {
+            throw "CUDA_PATH 未设置或目录不存在。请在 self-hosted runner 上安装 CUDA Toolkit。"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:CUDNN_HOME) -or -not (Test-Path -LiteralPath $env:CUDNN_HOME -PathType Container)) {
+            throw "CUDNN_HOME 未设置或目录不存在。请在 self-hosted runner 上安装 cuDNN。"
+          }
+          Write-Host "CUDA_PATH=$env:CUDA_PATH"
+          Write-Host "CUDNN_HOME=$env:CUDNN_HOME"
+
+      - name: Install build Python dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r .\tools\ci_build\github\windows\python\requirements.txt
+
+      - name: Build CUDA YOLO lite shared library
+        shell: pwsh
+        run: |
+          $buildDir = Join-Path $env:RUNNER_TEMP "ort-build-cuda"
+          $cudaArchitectures = if ("${{ github.event_name }}" -eq "workflow_dispatch") { "${{ inputs.cuda_architectures }}" } else { "86;89;120" }
+          $buildArgs = @(
+            "tools\ci_build\build.py",
+            "--update",
+            "--build",
+            "--config", "Release",
+            "--build_dir", $buildDir,
+            "--skip_tests",
+            "--parallel",
+            "--nvcc_threads", "1",
+            "--cmake_generator", "Visual Studio 17 2022",
+            "--build_shared_lib",
+            "--use_cuda",
+            "--cuda_home", $env:CUDA_PATH,
+            "--cudnn_home", $env:CUDNN_HOME
+          )
+          $defines = @(
+            "CMAKE_CUDA_ARCHITECTURES=$cudaArchitectures",
+            "CMAKE_CUDA_FLAGS=-Xcompiler=/Zc:preprocessor -DCCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING",
+            "onnxruntime_NEONSIGHT_YOLO_LITE=ON",
+            "onnxruntime_USE_FLASH_ATTENTION=OFF",
+            "onnxruntime_USE_LEAN_ATTENTION=OFF",
+            "onnxruntime_USE_MEMORY_EFFICIENT_ATTENTION=OFF",
+            "onnxruntime_USE_FP8_KV_CACHE=OFF",
+            "onnxruntime_USE_CUDA_NHWC_OPS=OFF",
+            "onnxruntime_DISABLE_FLOAT8_TYPES=ON",
+            "onnxruntime_DISABLE_FLOAT4_TYPES=ON"
+          )
+          foreach ($define in $defines) {
+            $buildArgs += @("--cmake_extra_defines", $define)
+          }
+          python @buildArgs
+
+      - name: Package CUDA install-root
+        shell: pwsh
+        run: |
+          $buildDir = Join-Path $env:RUNNER_TEMP "ort-build-cuda"
+          $artifactDir = Join-Path $env:RUNNER_TEMP "ort-artifacts"
+          pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\neonsight_yolo_lite\package_ort_install_root.ps1 `
+            -BuildDir $buildDir `
+            -SourceRoot $env:GITHUB_WORKSPACE `
+            -OutputDir $artifactDir `
+            -PackageName "onnxruntime-yolo-lite-win-x64-cuda" `
+            -PackageKind cuda
+          "ORT_YOLO_ARTIFACT_DIR=$artifactDir" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload CUDA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: onnxruntime-yolo-lite-win-x64-cuda
+          path: ${{ env.ORT_YOLO_ARTIFACT_DIR }}/*
+
+  release:
+    name: Publish GitHub Release
+    needs: [build-cpu-windows, build-cuda-windows]
+    if: ${{ always() && needs.build-cpu-windows.result == 'success' && (needs.build-cuda-windows.result == 'success' || needs.build-cuda-windows.result == 'skipped') && (startsWith(github.ref, 'refs/tags/yolo-lite-v') || (github.event_name == 'workflow_dispatch' && inputs.publish_release && inputs.release_tag != '')) }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Create release notes
+        shell: bash
+        run: |
+          tag_name="${GITHUB_REF_NAME}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag_name="${{ inputs.release_tag }}"
+          fi
+          {
+            echo "# NeonSight YOLO Lite ONNX Runtime"
+            echo
+            echo "- Source commit: ${GITHUB_SHA}"
+            echo "- Tag: ${tag_name}"
+            echo "- CPU install-root: included"
+            if [ "${{ needs.build-cuda-windows.result }}" = "success" ]; then
+              echo "- CUDA YOLO lite install-root: included"
+            else
+              echo "- CUDA YOLO lite install-root: not built in this run"
+            fi
+            echo
+            echo "Assets contain an include/lib/bin install-root layout and BUILD_INFO.json."
+          } > RELEASE_NOTES.md
+          echo "ORT_YOLO_RELEASE_TAG=${tag_name}" >> "$GITHUB_ENV"
+
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s globstar nullglob
+          assets=(release-assets/**/*.zip release-assets/**/*.md)
+          if gh release view "${ORT_YOLO_RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release upload "${ORT_YOLO_RELEASE_TAG}" "${assets[@]}" --clobber
+          else
+            gh release create "${ORT_YOLO_RELEASE_TAG}" "${assets[@]}" \
+              --target "${GITHUB_SHA}" \
+              --title "NeonSight YOLO Lite ORT ${ORT_YOLO_RELEASE_TAG}" \
+              --notes-file RELEASE_NOTES.md
+          fi
