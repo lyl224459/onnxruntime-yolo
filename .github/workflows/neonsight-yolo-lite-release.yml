@@ -282,9 +282,9 @@ jobs:
         run: |
           $buildDir = Join-Path $env:RUNNER_TEMP "ort-build-cuda"
           $diagnosticFiles = @(
-            Join-Path $buildDir "Release\CMakeFiles\CMakeError.log",
-            Join-Path $buildDir "Release\CMakeFiles\CMakeOutput.log",
-            Join-Path $buildDir "Release\CMakeCache.txt"
+            ([System.IO.Path]::Combine($buildDir, "Release", "CMakeFiles", "CMakeError.log")),
+            ([System.IO.Path]::Combine($buildDir, "Release", "CMakeFiles", "CMakeOutput.log")),
+            ([System.IO.Path]::Combine($buildDir, "Release", "CMakeCache.txt"))
           )
           foreach ($file in $diagnosticFiles) {
             if (Test-Path -LiteralPath $file -PathType Leaf) {
@@ -380,9 +380,14 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           shopt -s globstar nullglob
           assets=(release-assets/**/*.zip release-assets/**/*.md)
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "No release assets found."
+            exit 1
+          fi
           if gh release view "${ORT_YOLO_RELEASE_TAG}" >/dev/null 2>&1; then
             gh release upload "${ORT_YOLO_RELEASE_TAG}" "${assets[@]}" --clobber
           else
