@@ -118,19 +118,30 @@ jobs:
           python-version: "3.12"
           architecture: x64
 
-      - name: Check CUDA/cuDNN environment
+      - name: Prepare CUDA/cuDNN environment
         id: cuda_env
         continue-on-error: true
         shell: pwsh
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:CUDA_PATH) -or -not (Test-Path -LiteralPath $env:CUDA_PATH -PathType Container)) {
-            throw "CUDA_PATH 未设置或目录不存在。请在 self-hosted runner 上安装 CUDA Toolkit。"
+          $cudaVersion = "${{ vars.ORT_YOLO_CUDA_VERSION }}"
+          if ([string]::IsNullOrWhiteSpace($cudaVersion)) {
+            $cudaVersion = "13.0.2"
           }
-          if ([string]::IsNullOrWhiteSpace($env:CUDNN_HOME) -or -not (Test-Path -LiteralPath $env:CUDNN_HOME -PathType Container)) {
-            throw "CUDNN_HOME 未设置或目录不存在。请在 self-hosted runner 上安装 cuDNN。"
+          $cudnnVersion = "${{ vars.ORT_YOLO_CUDNN_VERSION }}"
+          if ([string]::IsNullOrWhiteSpace($cudnnVersion)) {
+            $cudnnVersion = "9.17.0"
           }
-          Write-Host "CUDA_PATH=$env:CUDA_PATH"
-          Write-Host "CUDNN_HOME=$env:CUDNN_HOME"
+          $scriptArgs = @(
+            "-CudaVersion", $cudaVersion,
+            "-CudnnVersion", $cudnnVersion
+          )
+          if (-not [string]::IsNullOrWhiteSpace("${{ vars.ORT_YOLO_CUDA_INSTALLER_URL }}")) {
+            $scriptArgs += @("-CudaInstallerUrl", "${{ vars.ORT_YOLO_CUDA_INSTALLER_URL }}")
+          }
+          if (-not [string]::IsNullOrWhiteSpace("${{ vars.ORT_YOLO_CUDNN_MANIFEST_URL }}")) {
+            $scriptArgs += @("-CudnnManifestUrl", "${{ vars.ORT_YOLO_CUDNN_MANIFEST_URL }}")
+          }
+          pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\neonsight_yolo_lite\install_cuda_cudnn_ci.ps1 @scriptArgs
 
       - name: Install build Python dependencies
         id: cuda_deps

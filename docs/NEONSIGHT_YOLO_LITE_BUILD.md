@@ -19,13 +19,17 @@
 - 推送 `yolo-lite-v*` 标签：自动构建并发布 GitHub Release。
 - 手动运行 workflow：可只生成 artifact，也可填写 `release_tag` 并启用 `publish_release` 发布 Release。
 
-默认会先尝试构建 CUDA YOLO 精简版。如果 CUDA 环境不存在、依赖检查失败、编译失败或打包失败，workflow 会继续执行 CPU install-root 兜底构建，并把成功的制品发布到 Release。
+默认会先尝试构建 CUDA YOLO 精简版。CUDA job 会先复用 runner 上已有的 CUDA / cuDNN；如果缺失，则自动下载并安装 CUDA Toolkit 13.0.2 网络安装器和 cuDNN 9.17 CUDA 13 redist zip。若 CUDA 环境准备、依赖安装、编译、打包或上传任一步失败，workflow 会继续执行 CPU install-root 兜底构建，并把成功的制品发布到 Release。
 
-未配置自托管 runner 时，CUDA job 会在 GitHub 托管 Windows runner 上快速完成环境检查；由于托管 runner 通常没有 CUDA / cuDNN，它会转入 CPU 兜底。若要真正产出 CUDA 制品，需要配置带 CUDA / cuDNN 的 Windows self-hosted runner，并在仓库变量中设置：
+未配置自托管 runner 时，CUDA job 会在 GitHub 托管 Windows runner 上尝试在线安装 CUDA / cuDNN 并编译 CUDA 制品。该路径可以做编译发布，但不能替代真实 GPU 推理验收；若要做真实 GPU 验证，仍建议配置带 NVIDIA GPU 的 Windows self-hosted runner，并在仓库变量中设置：
 
 - `ORT_YOLO_CUDA_RUNNER_LABELS=["self-hosted","Windows","X64","CUDA"]`
 - 可选：`ORT_YOLO_CUDA_ARCHITECTURES=86;89;120`
-- runner 环境中存在 `CUDA_PATH` 和 `CUDNN_HOME`
+- 可选：`ORT_YOLO_CUDA_VERSION=13.0.2`
+- 可选：`ORT_YOLO_CUDNN_VERSION=9.17.0`
+- 可选：`ORT_YOLO_CUDA_INSTALLER_URL=<CUDA Windows 网络安装器 URL>`
+- 可选：`ORT_YOLO_CUDNN_MANIFEST_URL=<cuDNN redist manifest URL>`
+- 可选：`ORT_YOLO_CUDA_INSTALL_COMPONENTS=<CUDA silent installer 组件列表>`
 
 手动运行 workflow 时，可以通过 `cuda_architectures` 输入覆盖本次 CUDA 架构列表。
 
