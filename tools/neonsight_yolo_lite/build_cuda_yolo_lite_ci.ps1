@@ -196,6 +196,11 @@ function New-BuildArguments {
   )
 
   $cudaMajorMinor = Get-CudaMajorMinor -Version $CudaVersion
+  $nvccPath = Join-Path $CudaHome "bin\nvcc.exe"
+  if (-not (Test-Path -LiteralPath $nvccPath -PathType Leaf)) {
+    throw "未找到 CUDA 编译器 nvcc.exe: $nvccPath"
+  }
+  $nvccCmakePath = ([System.IO.FileInfo]$nvccPath).FullName.Replace("\", "/")
   $buildArgs = @(
     "tools\ci_build\build.py",
     "--update",
@@ -223,6 +228,7 @@ function New-BuildArguments {
 
   $defines = @(
     "CMAKE_CUDA_ARCHITECTURES=$CudaArchitectures",
+    "CMAKE_CUDA_COMPILER=$nvccCmakePath",
     "CMAKE_CUDA_FLAGS=-allow-unsupported-compiler -Xcompiler=/Zc:preprocessor -DCCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING",
     "onnxruntime_CUDA_VERSION=$cudaMajorMinor",
     "onnxruntime_NEONSIGHT_YOLO_LITE=ON",
