@@ -65,7 +65,7 @@ REGISTER_KERNEL_TYPED(MLFloat16, MLFloat16)
 REGISTER_KERNEL_TYPED(BFloat16, BFloat16)
 REGISTER_KERNEL_TYPED(MLFloat16, int8_t)
 REGISTER_KERNEL_TYPED(BFloat16, int8_t)
-#ifdef USE_FP8_KV_CACHE
+#if defined(USE_FP8_KV_CACHE) && !defined(DISABLE_FLOAT8_TYPES)
 REGISTER_KERNEL_TYPED(MLFloat16, Float8E4M3FN)
 REGISTER_KERNEL_TYPED(BFloat16, Float8E4M3FN)
 #endif
@@ -303,7 +303,11 @@ Status GroupQueryAttention<T, U>::ComputeInternal(OpKernelContext* context) cons
 
   bool is_inputs_quantized = (k_quant_type_ != KVQuantizationType::NONE) || (v_quant_type_ != KVQuantizationType::NONE);
   constexpr bool is_int8 = std::is_same<U, int8_t>::value;
+#if defined(USE_FP8_KV_CACHE) && !defined(DISABLE_FLOAT8_TYPES)
   constexpr bool is_fp8 = std::is_same<U, Float8E4M3FN>::value;
+#else
+  constexpr bool is_fp8 = false;
+#endif
 
   // Allocate XQA scratch if needed (only for Flash Decoding path)
   IAllocatorUniquePtr<void> xqa_scratch_buffer;
@@ -335,7 +339,7 @@ Status GroupQueryAttention<T, U>::ComputeInternal(OpKernelContext* context) cons
                                         (parameters.head_size == 256 || parameters.head_size == 128 || parameters.head_size == 64) &&
                                         (group_size == 4 || group_size == 8 || group_size == 16 || group_size == 32));
 
-#ifdef USE_FP8_KV_CACHE
+#if defined(USE_FP8_KV_CACHE) && !defined(DISABLE_FLOAT8_TYPES)
     bool is_fp8_quantized_supported = is_fp8 &&
                                       (k_quant_type_ == KVQuantizationType::PER_TENSOR &&
                                        v_quant_type_ == KVQuantizationType::PER_TENSOR &&

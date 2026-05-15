@@ -654,7 +654,11 @@ Status ExtremeDecoding(
   void* xqa_workspace = data.xqa_buffer;
   size_t xqa_workspace_size = data.xqa_buffer_bytes;
 
+#if defined(USE_FP8_KV_CACHE) && !defined(DISABLE_FLOAT8_TYPES)
   constexpr bool is_fp8 = std::is_same<U, __nv_fp8_e4m3>::value;
+#else
+  constexpr bool is_fp8 = false;
+#endif
   using onnxruntime::contrib::cuda::XqaQuantType;
   // 5. Launch XQA
   Status status = onnxruntime::contrib::cuda::LaunchXQAKernel<T>(
@@ -1286,7 +1290,7 @@ template Status QkvToContext<__nv_bfloat16, uint8_t>(
     GroupQueryAttentionData<__nv_bfloat16, uint8_t>& data);
 #endif
 
-#ifdef USE_FP8_KV_CACHE
+#if defined(USE_FP8_KV_CACHE) && !defined(DISABLE_FLOAT8_TYPES)
 template struct GroupQueryAttentionData<half, __nv_fp8_e4m3>;
 
 template Status QkvToContext<half, __nv_fp8_e4m3>(

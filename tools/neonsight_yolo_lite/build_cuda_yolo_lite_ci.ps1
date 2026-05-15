@@ -156,6 +156,38 @@ function Get-BuildDirectory {
   return "$BuildRoot-vs"
 }
 
+function Get-DiagnosticsRoot {
+  $root = $env:RUNNER_TEMP
+  if ([string]::IsNullOrWhiteSpace($root)) {
+    $root = $env:TEMP
+  }
+  if ([string]::IsNullOrWhiteSpace($root)) {
+    $root = [System.IO.Path]::GetTempPath()
+  }
+
+  $diagnosticsRoot = Join-Path $root "ort-yolo-diagnostics"
+  New-Item -ItemType Directory -Force -Path $diagnosticsRoot | Out-Null
+  if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_ENV)) {
+    "ORT_YOLO_CUDA_DIAGNOSTIC_DIR=$diagnosticsRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+  }
+  return $diagnosticsRoot
+}
+
+function Invoke-PythonBuildWithLog {
+  param(
+    [string[]]$BuildArgs,
+    [string]$Generator
+  )
+
+  $diagnosticsRoot = Get-DiagnosticsRoot
+  $safeGenerator = $Generator -replace "[^A-Za-z0-9_.-]", "_"
+  $logPath = Join-Path $diagnosticsRoot "cuda-$safeGenerator-build.log"
+  Write-Host "CUDA 构建完整日志: $logPath"
+
+  & python @BuildArgs 2>&1 | Tee-Object -FilePath $logPath
+  return $LASTEXITCODE
+}
+
 function New-BuildArguments {
   param(
     [string]$Generator,
@@ -229,9 +261,9 @@ function Invoke-CudaBuild {
 
   Write-Host "CUDA YOLO lite build.py 参数（$Generator）:"
   $buildArgs | ForEach-Object { Write-Host "  $_" }
-  python @buildArgs
-  if ($LASTEXITCODE -ne 0) {
-    throw "$Generator 构建失败，退出代码: $LASTEXITCODE"
+  $exitCode = Invoke-PythonBuildWithLog -BuildArgs $buildArgs -Generator $Generator
+  if ($exitCode -ne 0) {
+    throw "$Generator 构建失败，退出代码: $exitCode"
   }
 
   if (-not [string]::IsNullOrWhiteSpace($env:GITHUB_ENV)) {

@@ -71,9 +71,10 @@ $depsFileFull = [System.IO.Path]::GetFullPath($DepsFile)
 New-Item -ItemType Directory -Force -Path $mirrorRootFull | Out-Null
 $includeSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 $matchedSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-foreach ($name in $IncludeNames) {
+$normalizedIncludeNames = @($IncludeNames | ForEach-Object { $_ -split "[;,]" })
+foreach ($name in $normalizedIncludeNames) {
   if (-not [string]::IsNullOrWhiteSpace($name)) {
-    $includeSet.Add($name) | Out-Null
+    $includeSet.Add($name.Trim()) | Out-Null
   }
 }
 

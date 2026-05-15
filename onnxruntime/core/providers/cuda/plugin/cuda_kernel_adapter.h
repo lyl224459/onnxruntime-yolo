@@ -657,10 +657,12 @@ inline bool GetCudaKernelAdapterSkipLayerNormStrictMode(const void* provider) {
 using Status = onnxruntime::common::Status;
 using MLFloat16 = onnxruntime::MLFloat16;
 using BFloat16 = onnxruntime::BFloat16;
+#if !defined(DISABLE_FLOAT8_TYPES)
 using Float8E4M3FN = onnxruntime::Float8E4M3FN;
 using Float8E4M3FNUZ = onnxruntime::Float8E4M3FNUZ;
 using Float8E5M2 = onnxruntime::Float8E5M2;
 using Float8E5M2FNUZ = onnxruntime::Float8E5M2FNUZ;
+#endif
 
 // Type mapping for CUDA
 template <typename T>
@@ -1210,9 +1212,11 @@ class CublasMathModeSetter {
 // Global aliases for convenience
 using MLFloat16 = onnxruntime::MLFloat16;
 using BFloat16 = onnxruntime::BFloat16;
+#if !defined(DISABLE_FLOAT8_TYPES)
 using Float8E4M3FN = onnxruntime::Float8E4M3FN;
 using Float8E4M3FNUZ = onnxruntime::Float8E4M3FNUZ;
 using Float8E5M2 = onnxruntime::Float8E5M2;
 using Float8E5M2FNUZ = onnxruntime::Float8E5M2FNUZ;
+#endif
 
 }  // namespace onnxruntime

@@ -4,6 +4,6 @@
 #define HEAD_ELEMS 64
 #define HEAD_DIM_NAMESPACE H64
 
-#ifdef USE_FP8_KV_CACHE
+#if defined(USE_FP8_KV_CACHE) && !defined(DISABLE_FLOAT8_TYPES)
 #include "xqa_loader_bf16_fp8_impl.cuh"
 #endif

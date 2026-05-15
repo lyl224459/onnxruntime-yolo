@@ -77,25 +77,27 @@ jobs:
         shell: pwsh
         run: |
           $mirrorDir = Join-Path $env:RUNNER_TEMP "ort-cmake-deps-mirror"
+          $mirrorIncludes = @(
+            "abseil_cpp",
+            "date",
+            "eigen",
+            "flatbuffers",
+            "googletest",
+            "json",
+            "microsoft_gsl",
+            "microsoft_wil",
+            "mp11",
+            "onnx",
+            "protobuf",
+            "pytorch_cpuinfo",
+            "re2",
+            "safeint"
+          )
+          $mirrorIncludeText = $mirrorIncludes -join ";"
           pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\neonsight_yolo_lite\prepare_cmake_deps_mirror.ps1 `
             -MirrorRoot $mirrorDir `
             -DepsFile .\cmake\deps.txt `
-            -IncludeNames @(
-              "abseil_cpp",
-              "date",
-              "eigen",
-              "flatbuffers",
-              "googletest",
-              "json",
-              "microsoft_gsl",
-              "microsoft_wil",
-              "mp11",
-              "onnx",
-              "protobuf",
-              "pytorch_cpuinfo",
-              "re2",
-              "safeint"
-            )
+            -IncludeNames $mirrorIncludeText
 
       - name: Build CPU shared library
         id: cpu_build
@@ -141,6 +143,31 @@ jobs:
               }
             }
           }
+
+      - name: Collect CPU diagnostics bundle
+        if: ${{ always() && steps.cpu_build.outcome != 'success' }}
+        shell: pwsh
+        run: |
+          $outputDir = Join-Path $env:RUNNER_TEMP "ort-cpu-diagnostics"
+          $buildRoot = Join-Path $env:RUNNER_TEMP "ort-build-cpu"
+          $buildRoots = @(
+            "$buildRoot-ninja",
+            "$buildRoot-vs",
+            $buildRoot,
+            $env:ORT_YOLO_CPU_DIAGNOSTIC_DIR
+          ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\neonsight_yolo_lite\collect_ci_diagnostics.ps1 `
+            -BuildRoots $buildRoots `
+            -OutputDir $outputDir
+          "ORT_YOLO_CPU_DIAGNOSTIC_BUNDLE=$outputDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Upload CPU diagnostics bundle
+        if: ${{ always() && steps.cpu_build.outcome != 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: onnxruntime-yolo-lite-win-x64-cpu-diagnostics
+          path: ${{ runner.temp }}/ort-cpu-diagnostics/**
+          if-no-files-found: ignore
 
       - name: Package CPU install-root
         if: ${{ steps.cpu_build.outcome == 'success' }}
@@ -243,27 +270,29 @@ jobs:
         shell: pwsh
         run: |
           $mirrorDir = Join-Path $env:RUNNER_TEMP "ort-cmake-deps-mirror"
+          $mirrorIncludes = @(
+            "abseil_cpp",
+            "date",
+            "eigen",
+            "flatbuffers",
+            "googletest",
+            "json",
+            "microsoft_gsl",
+            "microsoft_wil",
+            "mp11",
+            "onnx",
+            "protobuf",
+            "pytorch_cpuinfo",
+            "re2",
+            "safeint",
+            "cutlass",
+            "cudnn_frontend"
+          )
+          $mirrorIncludeText = $mirrorIncludes -join ";"
           pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\neonsight_yolo_lite\prepare_cmake_deps_mirror.ps1 `
             -MirrorRoot $mirrorDir `
             -DepsFile .\cmake\deps.txt `
-            -IncludeNames @(
-              "abseil_cpp",
-              "date",
-              "eigen",
-              "flatbuffers",
-              "googletest",
-              "json",
-              "microsoft_gsl",
-              "microsoft_wil",
-              "mp11",
-              "onnx",
-              "protobuf",
-              "pytorch_cpuinfo",
-              "re2",
-              "safeint",
-              "cutlass",
-              "cudnn_frontend"
-            )
+            -IncludeNames $mirrorIncludeText
 
       - name: Install build Python dependencies
         id: cuda_deps
@@ -295,6 +324,54 @@ jobs:
             }
           }
 
+          function Import-MsvcDiagnosticEnvironment {
+            if (Get-Command "cl.exe" -ErrorAction SilentlyContinue) {
+              return
+            }
+
+            $vswhereCandidates = @(
+              (Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"),
+              (Join-Path $env:ProgramFiles "Microsoft Visual Studio\Installer\vswhere.exe")
+            )
+            $vswhere = $vswhereCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+            if (-not $vswhere) {
+              Write-Warning "未找到 vswhere.exe，无法在诊断步骤初始化 MSVC。"
+              return
+            }
+
+            $vsRoot = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1)
+            if ([string]::IsNullOrWhiteSpace($vsRoot)) {
+              Write-Warning "未找到包含 VC 工具链的 Visual Studio，诊断步骤无法定位 cl.exe。"
+              return
+            }
+
+            $devShell = Join-Path $vsRoot "Common7\Tools\Launch-VsDevShell.ps1"
+            if (Test-Path -LiteralPath $devShell -PathType Leaf) {
+              try {
+                & $devShell -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
+              } catch {
+                Write-Warning "诊断步骤调用 Launch-VsDevShell.ps1 失败，将尝试 vcvars64.bat: $($_.Exception.Message)"
+              }
+            }
+
+            if (Get-Command "cl.exe" -ErrorAction SilentlyContinue) {
+              return
+            }
+
+            $vcvars = Join-Path $vsRoot "VC\Auxiliary\Build\vcvars64.bat"
+            if (-not (Test-Path -LiteralPath $vcvars -PathType Leaf)) {
+              Write-Warning "未找到 vcvars64.bat，诊断步骤无法定位 cl.exe: $vcvars"
+              return
+            }
+
+            $cmd = "`"$vcvars`" && set"
+            cmd.exe /d /s /c $cmd | ForEach-Object {
+              if ($_ -match "^(.*?)=(.*)$") {
+                [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], "Process")
+              }
+            }
+          }
+
           Write-Host "CUDA_PATH=$env:CUDA_PATH"
           Write-Host "CUDNN_HOME=$env:CUDNN_HOME"
           Write-Host "PATH=$env:PATH"
@@ -302,6 +379,7 @@ jobs:
           Invoke-OptionalNativeCommand -Command "where.exe" -Arguments @("cmake")
           Invoke-OptionalNativeCommand -Command "where.exe" -Arguments @("nvcc")
           Invoke-OptionalNativeCommand -Command "nvcc" -Arguments @("--version")
+          Import-MsvcDiagnosticEnvironment
           Invoke-OptionalNativeCommand -Command "where.exe" -Arguments @("cl")
 
           $vsRoots = @()
@@ -400,6 +478,31 @@ jobs:
             }
           }
 
+      - name: Collect CUDA diagnostics bundle
+        if: ${{ always() && steps.cuda_build.outcome != 'success' }}
+        shell: pwsh
+        run: |
+          $outputDir = Join-Path $env:RUNNER_TEMP "ort-cuda-diagnostics"
+          $buildRoot = Join-Path $env:RUNNER_TEMP "ort-build-cuda"
+          $buildRoots = @(
+            "$buildRoot-ninja",
+            "$buildRoot-vs",
+            $buildRoot,
+            $env:ORT_YOLO_CUDA_DIAGNOSTIC_DIR
+          ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+          pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\neonsight_yolo_lite\collect_ci_diagnostics.ps1 `
+            -BuildRoots $buildRoots `
+            -OutputDir $outputDir
+          "ORT_YOLO_CUDA_DIAGNOSTIC_BUNDLE=$outputDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Upload CUDA diagnostics bundle
+        if: ${{ always() && steps.cuda_build.outcome != 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: onnxruntime-yolo-lite-win-x64-cuda-diagnostics
+          path: ${{ runner.temp }}/ort-cuda-diagnostics/**
+          if-no-files-found: ignore
+
       - name: Package CUDA install-root
         id: cuda_package
         if: ${{ steps.cuda_build.outcome == 'success' }}
@@ -489,7 +592,7 @@ jobs:
       - name: Publish release
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.ORT_YOLO_RELEASE_TOKEN || github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           shopt -s globstar nullglob
@@ -498,11 +601,25 @@ jobs:
             echo "No release assets found."
             exit 1
           fi
-          if gh release view "${ORT_YOLO_RELEASE_TAG}" >/dev/null 2>&1; then
-            gh release upload "${ORT_YOLO_RELEASE_TAG}" "${assets[@]}" --clobber
+          set +e
+          view_output="$(gh release view "${ORT_YOLO_RELEASE_TAG}" 2>&1)"
+          view_status=$?
+          set -e
+          if [ "${view_status}" -eq 0 ]; then
+            if ! gh release upload "${ORT_YOLO_RELEASE_TAG}" "${assets[@]}" --clobber; then
+              echo "::error::GitHub Release 上传失败。若看到 HTTP 403，请在仓库 Settings > Actions > General 开启 Read and write permissions，或配置 ORT_YOLO_RELEASE_TOKEN secret（Contents: Read and write）。"
+              exit 1
+            fi
+          elif echo "${view_output}" | grep -q "HTTP 403"; then
+            echo "::error::当前 token 无权访问 GitHub Releases API。请在仓库 Settings > Actions > General 开启 Read and write permissions，或配置 ORT_YOLO_RELEASE_TOKEN secret（Contents: Read and write）。"
+            echo "${view_output}"
+            exit 1
           else
-            gh release create "${ORT_YOLO_RELEASE_TAG}" "${assets[@]}" \
+            if ! gh release create "${ORT_YOLO_RELEASE_TAG}" "${assets[@]}" \
               --target "${GITHUB_SHA}" \
               --title "NeonSight YOLO Lite ORT ${ORT_YOLO_RELEASE_TAG}" \
-              --notes-file RELEASE_NOTES.md
+              --notes-file RELEASE_NOTES.md; then
+              echo "::error::GitHub Release 创建失败。若看到 HTTP 403，请在仓库 Settings > Actions > General 开启 Read and write permissions，或配置 ORT_YOLO_RELEASE_TOKEN secret（Contents: Read and write）。"
+              exit 1
+            fi
           fi
