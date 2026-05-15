@@ -27,6 +27,10 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  ORT_YOLO_DEFAULT_CMAKE_GENERATOR: Ninja
+  ORT_YOLO_DEFAULT_CUDA_ARCHITECTURES: "86;89;120"
+  ORT_YOLO_DEFAULT_CUDA_VERSION: "13.0.2"
+  ORT_YOLO_DEFAULT_CUDNN_VERSION: "9.17.0"
 
 concurrency:
   group: neonsight-yolo-lite-${{ github.ref }}
@@ -51,6 +55,16 @@ jobs:
         with:
           python-version: "3.12"
           architecture: x64
+          cache: pip
+          cache-dependency-path: tools/ci_build/github/windows/python/requirements.txt
+
+      - name: Restore CMake dependency mirror cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}\ort-cmake-deps-mirror
+          key: ort-cmake-deps-${{ runner.os }}-${{ hashFiles('cmake/deps.txt') }}
+          restore-keys: |
+            ort-cmake-deps-${{ runner.os }}-
 
       - name: Install build Python dependencies
         shell: pwsh
@@ -58,35 +72,84 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r .\tools\ci_build\github\windows\python\requirements.txt
 
+      - name: Prepare CMake dependency mirror
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $mirrorDir = Join-Path $env:RUNNER_TEMP "ort-cmake-deps-mirror"
+          pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\neonsight_yolo_lite\prepare_cmake_deps_mirror.ps1 `
+            -MirrorRoot $mirrorDir `
+            -DepsFile .\cmake\deps.txt `
+            -IncludeNames @(
+              "abseil_cpp",
+              "date",
+              "eigen",
+              "flatbuffers",
+              "googletest",
+              "json",
+              "microsoft_gsl",
+              "microsoft_wil",
+              "mp11",
+              "onnx",
+              "protobuf",
+              "pytorch_cpuinfo",
+              "re2",
+              "safeint"
+            )
+
       - name: Build CPU shared library
+        id: cpu_build
+        continue-on-error: true
         shell: pwsh
         run: |
           $buildDir = Join-Path $env:RUNNER_TEMP "ort-build-cpu"
-          $buildArgs = @(
-            "tools\ci_build\build.py",
-            "--update",
-            "--build",
-            "--config", "Release",
-            "--build_dir", $buildDir,
-            "--skip_tests",
-            "--parallel",
-            "--cmake_generator", "Visual Studio 17 2022",
-            "--build_shared_lib"
-          )
-          $defines = @(
-            "onnxruntime_DISABLE_ML_OPS=ON",
-            "onnxruntime_DISABLE_FLOAT8_TYPES=ON",
-            "onnxruntime_DISABLE_FLOAT4_TYPES=ON"
-          )
-          foreach ($define in $defines) {
-            $buildArgs += @("--cmake_extra_defines", $define)
+          $preferredGenerator = "${{ vars.ORT_YOLO_CMAKE_GENERATOR }}"
+          if ([string]::IsNullOrWhiteSpace($preferredGenerator)) {
+            $preferredGenerator = $env:ORT_YOLO_DEFAULT_CMAKE_GENERATOR
           }
-          python @buildArgs
+          pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\neonsight_yolo_lite\build_cpu_yolo_lite_ci.ps1 `
+            -BuildRoot $buildDir `
+            -PreferredGenerator $preferredGenerator
+
+      - name: Print CPU CMake diagnostics
+        if: ${{ always() && steps.cpu_build.outcome != 'success' }}
+        shell: pwsh
+        run: |
+          $buildRoot = Join-Path $env:RUNNER_TEMP "ort-build-cpu"
+          $candidateBuildDirs = @(
+            "$buildRoot-ninja",
+            "$buildRoot-vs",
+            $buildRoot
+          )
+          foreach ($buildDir in $candidateBuildDirs) {
+            if (-not (Test-Path -LiteralPath $buildDir -PathType Container)) {
+              continue
+            }
+            Write-Host "检查 CPU 构建诊断目录: $buildDir"
+            $diagnosticFiles = @(
+              ([System.IO.Path]::Combine($buildDir, "Release", "CMakeFiles", "CMakeError.log")),
+              ([System.IO.Path]::Combine($buildDir, "Release", "CMakeFiles", "CMakeOutput.log")),
+              ([System.IO.Path]::Combine($buildDir, "Release", "CMakeCache.txt")),
+              ([System.IO.Path]::Combine($buildDir, "CMakeFiles", "CMakeError.log")),
+              ([System.IO.Path]::Combine($buildDir, "CMakeFiles", "CMakeOutput.log")),
+              ([System.IO.Path]::Combine($buildDir, "CMakeCache.txt"))
+            )
+            foreach ($file in $diagnosticFiles) {
+              if (Test-Path -LiteralPath $file -PathType Leaf) {
+                Write-Host "===== $file ====="
+                Get-Content -LiteralPath $file -Tail 220
+              }
+            }
+          }
 
       - name: Package CPU install-root
+        if: ${{ steps.cpu_build.outcome == 'success' }}
         shell: pwsh
         run: |
-          $buildDir = Join-Path $env:RUNNER_TEMP "ort-build-cpu"
+          $buildDir = $env:ORT_YOLO_CPU_BUILD_DIR
+          if ([string]::IsNullOrWhiteSpace($buildDir)) {
+            $buildDir = Join-Path $env:RUNNER_TEMP "ort-build-cpu"
+          }
           $artifactDir = Join-Path $env:RUNNER_TEMP "ort-artifacts"
           pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\neonsight_yolo_lite\package_ort_install_root.ps1 `
             -BuildDir $buildDir `
@@ -97,14 +160,21 @@ jobs:
           "ORT_YOLO_ARTIFACT_DIR=$artifactDir" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Upload CPU artifact
+        if: ${{ steps.cpu_build.outcome == 'success' }}
         uses: actions/upload-artifact@v7
         with:
           name: onnxruntime-yolo-lite-win-x64-cpu
           path: ${{ env.ORT_YOLO_ARTIFACT_DIR }}/*
 
+      - name: Fail CPU job if build failed
+        if: ${{ always() && steps.cpu_build.outcome != 'success' }}
+        shell: pwsh
+        run: |
+          throw "CPU YOLO 精简版构建失败，已输出诊断日志。"
+
   build-cuda-windows:
     name: Windows CUDA YOLO lite install-root
-    runs-on: ${{ fromJSON(vars.ORT_YOLO_CUDA_RUNNER_LABELS || '["windows-2022"]') }}
+    runs-on: windows-2022
     timeout-minutes: 720
     outputs:
       cuda_success: ${{ steps.cuda_result.outputs.cuda_success }}
@@ -120,6 +190,25 @@ jobs:
         with:
           python-version: "3.12"
           architecture: x64
+          cache: pip
+          cache-dependency-path: tools/ci_build/github/windows/python/requirements.txt
+
+      - name: Restore CUDA/cuDNN cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}\ort-yolo-cuda
+          key: ort-yolo-cuda-${{ runner.os }}-cuda-${{ vars.ORT_YOLO_CUDA_VERSION }}-${{ env.ORT_YOLO_DEFAULT_CUDA_VERSION }}-cudnn-${{ vars.ORT_YOLO_CUDNN_VERSION }}-${{ env.ORT_YOLO_DEFAULT_CUDNN_VERSION }}-${{ hashFiles('tools/neonsight_yolo_lite/install_cuda_cudnn_ci.ps1') }}
+          restore-keys: |
+            ort-yolo-cuda-${{ runner.os }}-cuda-${{ vars.ORT_YOLO_CUDA_VERSION }}-${{ env.ORT_YOLO_DEFAULT_CUDA_VERSION }}-cudnn-${{ vars.ORT_YOLO_CUDNN_VERSION }}-${{ env.ORT_YOLO_DEFAULT_CUDNN_VERSION }}-
+            ort-yolo-cuda-${{ runner.os }}-
+
+      - name: Restore CMake dependency mirror cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}\ort-cmake-deps-mirror
+          key: ort-cmake-deps-${{ runner.os }}-${{ hashFiles('cmake/deps.txt') }}
+          restore-keys: |
+            ort-cmake-deps-${{ runner.os }}-
 
       - name: Prepare CUDA/cuDNN environment
         id: cuda_env
@@ -130,11 +219,11 @@ jobs:
         run: |
           $cudaVersion = "${{ vars.ORT_YOLO_CUDA_VERSION }}"
           if ([string]::IsNullOrWhiteSpace($cudaVersion)) {
-            $cudaVersion = "13.0.2"
+            $cudaVersion = $env:ORT_YOLO_DEFAULT_CUDA_VERSION
           }
           $cudnnVersion = "${{ vars.ORT_YOLO_CUDNN_VERSION }}"
           if ([string]::IsNullOrWhiteSpace($cudnnVersion)) {
-            $cudnnVersion = "9.17.0"
+            $cudnnVersion = $env:ORT_YOLO_DEFAULT_CUDNN_VERSION
           }
           $scriptArgs = @(
             "-CudaVersion", $cudaVersion,
@@ -148,6 +237,34 @@ jobs:
           }
           pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\neonsight_yolo_lite\install_cuda_cudnn_ci.ps1 @scriptArgs
 
+      - name: Prepare CMake dependency mirror
+        if: ${{ steps.cuda_env.outcome == 'success' }}
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $mirrorDir = Join-Path $env:RUNNER_TEMP "ort-cmake-deps-mirror"
+          pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\neonsight_yolo_lite\prepare_cmake_deps_mirror.ps1 `
+            -MirrorRoot $mirrorDir `
+            -DepsFile .\cmake\deps.txt `
+            -IncludeNames @(
+              "abseil_cpp",
+              "date",
+              "eigen",
+              "flatbuffers",
+              "googletest",
+              "json",
+              "microsoft_gsl",
+              "microsoft_wil",
+              "mp11",
+              "onnx",
+              "protobuf",
+              "pytorch_cpuinfo",
+              "re2",
+              "safeint",
+              "cutlass",
+              "cudnn_frontend"
+            )
+
       - name: Install build Python dependencies
         id: cuda_deps
         if: ${{ steps.cuda_env.outcome == 'success' }}
@@ -159,6 +276,7 @@ jobs:
 
       - name: Print CUDA build environment
         if: ${{ steps.cuda_deps.outcome == 'success' }}
+        continue-on-error: true
         shell: pwsh
         run: |
           function Invoke-OptionalNativeCommand {
@@ -230,68 +348,55 @@ jobs:
           $buildDir = Join-Path $env:RUNNER_TEMP "ort-build-cuda"
           $cudaArchitectures = if ("${{ github.event_name }}" -eq "workflow_dispatch") { "${{ inputs.cuda_architectures }}" } else { "${{ vars.ORT_YOLO_CUDA_ARCHITECTURES }}" }
           if ([string]::IsNullOrWhiteSpace($cudaArchitectures)) {
-            $cudaArchitectures = "86;89;120"
+            $cudaArchitectures = $env:ORT_YOLO_DEFAULT_CUDA_ARCHITECTURES
           }
           $cudaVersion = "${{ steps.cuda_env.outputs.cuda_version }}"
           if ([string]::IsNullOrWhiteSpace($cudaVersion)) {
             $cudaVersion = "${{ vars.ORT_YOLO_CUDA_VERSION }}"
           }
           if ([string]::IsNullOrWhiteSpace($cudaVersion)) {
-            $cudaVersion = "13.0"
+            $cudaVersion = $env:ORT_YOLO_DEFAULT_CUDA_VERSION
           }
-          $cudaMajorMinor = ($cudaVersion -split '\.')[0..1] -join '.'
-          $cudaToolkitDir = ([System.IO.DirectoryInfo]$env:CUDA_PATH).FullName.Replace("\", "/")
-          $buildArgs = @(
-            "tools\ci_build\build.py",
-            "--update",
-            "--build",
-            "--config", "Release",
-            "--build_dir", $buildDir,
-            "--skip_tests",
-            "--parallel",
-            "--nvcc_threads", "1",
-            "--cmake_generator", "Visual Studio 17 2022",
-            "--build_shared_lib",
-            "--use_cuda",
-            "--cuda_home", $env:CUDA_PATH,
-            "--cudnn_home", $env:CUDNN_HOME,
-            "--disable_cuda_nhwc_ops",
-            "--disable_types", "float8", "float4",
-            "--no_kleidiai",
-            "--no_sve"
-          )
-          $defines = @(
-            "CMAKE_CUDA_ARCHITECTURES=$cudaArchitectures",
-            "CMAKE_VS_GLOBALS=UseMultiToolTask=true;EnforceProcessCountAcrossBuilds=true;CudaToolkitDir=$cudaToolkitDir",
-            "CMAKE_CUDA_FLAGS=-allow-unsupported-compiler -Xcompiler=/Zc:preprocessor -DCCCL_IGNORE_MSVC_TRADITIONAL_PREPROCESSOR_WARNING",
-            "onnxruntime_CUDA_VERSION=$cudaMajorMinor",
-            "onnxruntime_NEONSIGHT_YOLO_LITE=ON",
-            "onnxruntime_USE_FLASH_ATTENTION=OFF",
-            "onnxruntime_USE_LEAN_ATTENTION=OFF",
-            "onnxruntime_USE_MEMORY_EFFICIENT_ATTENTION=OFF",
-            "onnxruntime_USE_FP8_KV_CACHE=OFF"
-          )
-          foreach ($define in $defines) {
-            $buildArgs += @("--cmake_extra_defines", $define)
+          $preferredGenerator = "${{ vars.ORT_YOLO_CMAKE_GENERATOR }}"
+          if ([string]::IsNullOrWhiteSpace($preferredGenerator)) {
+            $preferredGenerator = $env:ORT_YOLO_DEFAULT_CMAKE_GENERATOR
           }
-          Write-Host "CUDA YOLO lite build.py 参数:"
-          $buildArgs | ForEach-Object { Write-Host "  $_" }
-          python @buildArgs
+          pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\neonsight_yolo_lite\build_cuda_yolo_lite_ci.ps1 `
+            -BuildRoot $buildDir `
+            -CudaArchitectures $cudaArchitectures `
+            -CudaVersion $cudaVersion `
+            -CudaHome $env:CUDA_PATH `
+            -CudnnHome $env:CUDNN_HOME `
+            -PreferredGenerator $preferredGenerator
 
       - name: Print CUDA CMake diagnostics
-        if: ${{ steps.cuda_build.outcome != 'success' }}
+        if: ${{ always() && steps.cuda_build.outcome != 'success' }}
         shell: pwsh
         run: |
-          $buildDir = Join-Path $env:RUNNER_TEMP "ort-build-cuda"
-          $diagnosticFiles = @(
-            ([System.IO.Path]::Combine($buildDir, "Release", "CMakeFiles", "CMakeError.log")),
-            ([System.IO.Path]::Combine($buildDir, "Release", "CMakeFiles", "CMakeOutput.log")),
-            ([System.IO.Path]::Combine($buildDir, "Release", "CMakeCache.txt"))
+          $buildRoot = Join-Path $env:RUNNER_TEMP "ort-build-cuda"
+          $candidateBuildDirs = @(
+            "$buildRoot-ninja",
+            "$buildRoot-vs",
+            $buildRoot
           )
-          foreach ($file in $diagnosticFiles) {
-            if (Test-Path -LiteralPath $file -PathType Leaf) {
-              Write-Host "===== $file ====="
-              Get-Content -LiteralPath $file -Tail 220
+          foreach ($buildDir in $candidateBuildDirs) {
+            if (-not (Test-Path -LiteralPath $buildDir -PathType Container)) {
+              continue
+            }
+            Write-Host "检查 CUDA 构建诊断目录: $buildDir"
+            $diagnosticFiles = @(
+              ([System.IO.Path]::Combine($buildDir, "Release", "CMakeFiles", "CMakeError.log")),
+              ([System.IO.Path]::Combine($buildDir, "Release", "CMakeFiles", "CMakeOutput.log")),
+              ([System.IO.Path]::Combine($buildDir, "Release", "CMakeCache.txt")),
+              ([System.IO.Path]::Combine($buildDir, "CMakeFiles", "CMakeError.log")),
+              ([System.IO.Path]::Combine($buildDir, "CMakeFiles", "CMakeOutput.log")),
+              ([System.IO.Path]::Combine($buildDir, "CMakeCache.txt"))
+            )
+            foreach ($file in $diagnosticFiles) {
+              if (Test-Path -LiteralPath $file -PathType Leaf) {
+                Write-Host "===== $file ====="
+                Get-Content -LiteralPath $file -Tail 220
+              }
             }
           }
 
@@ -301,7 +406,10 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: |
-          $buildDir = Join-Path $env:RUNNER_TEMP "ort-build-cuda"
+          $buildDir = $env:ORT_YOLO_CUDA_BUILD_DIR
+          if ([string]::IsNullOrWhiteSpace($buildDir)) {
+            $buildDir = Join-Path $env:RUNNER_TEMP "ort-build-cuda"
+          }
           $artifactDir = Join-Path $env:RUNNER_TEMP "ort-artifacts"
           pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\neonsight_yolo_lite\package_ort_install_root.ps1 `
             -BuildDir $buildDir `

@@ -25,6 +25,14 @@ function Invoke-DownloadWithRetry {
   )
 
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $OutFile) | Out-Null
+  if (Test-Path -LiteralPath $OutFile -PathType Leaf) {
+    $cachedFile = Get-Item -LiteralPath $OutFile
+    if ($cachedFile.Length -gt 0) {
+      Write-Host "使用缓存下载文件: $OutFile"
+      return
+    }
+  }
+
   for ($attempt = 1; $attempt -le 3; $attempt++) {
     try {
       Write-Host "下载: $Uri"
@@ -426,6 +434,13 @@ function Find-CudnnHome {
   $candidates = [System.Collections.Generic.List[string]]::new()
   Add-PathCandidate -Candidates $candidates -PathValue $env:CUDNN_HOME
   Add-PathCandidate -Candidates $candidates -PathValue $env:CUDNN_PATH
+
+  if (-not [string]::IsNullOrWhiteSpace($InstallRootPath) -and (Test-Path -LiteralPath $InstallRootPath -PathType Container)) {
+    Get-ChildItem -LiteralPath $InstallRootPath -Directory -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -like "cudnn-*" -or $_.Name -like "cudnn-system-*" } |
+      Sort-Object Name -Descending |
+      ForEach-Object { Add-PathCandidate -Candidates $candidates -PathValue $_.FullName }
+  }
 
   $programRoots = @($env:ProgramW6432, $env:ProgramFiles, ${env:ProgramFiles(x86)}) |
     Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
