@@ -184,8 +184,9 @@ function Invoke-PythonBuildWithLog {
   $logPath = Join-Path $diagnosticsRoot "cuda-$safeGenerator-build.log"
   Write-Host "CUDA 构建完整日志: $logPath"
 
-  & python @BuildArgs 2>&1 | Tee-Object -FilePath $logPath
-  return $LASTEXITCODE
+  & python @BuildArgs 2>&1 | Tee-Object -FilePath $logPath | Out-Host
+  $pythonExitCode = $LASTEXITCODE
+  return $pythonExitCode
 }
 
 function New-BuildArguments {
