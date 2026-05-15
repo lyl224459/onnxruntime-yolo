@@ -59,11 +59,14 @@ jobs:
           cache-dependency-path: tools/ci_build/github/windows/python/requirements.txt
 
       - name: Restore CMake dependency mirror cache
-        uses: actions/cache@v5
+        id: cpu_cmake_deps_cache
+        uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}\ort-cmake-deps-mirror
-          key: ort-cmake-deps-${{ runner.os }}-${{ hashFiles('cmake/deps.txt') }}
+          key: ort-cmake-deps-${{ runner.os }}-${{ hashFiles('cmake/deps.txt') }}-cpu-${{ github.run_id }}
           restore-keys: |
+            ort-cmake-deps-${{ runner.os }}-${{ hashFiles('cmake/deps.txt') }}-cuda-
+            ort-cmake-deps-${{ runner.os }}-${{ hashFiles('cmake/deps.txt') }}-cpu-
             ort-cmake-deps-${{ runner.os }}-
 
       - name: Install build Python dependencies
@@ -98,6 +101,13 @@ jobs:
             -MirrorRoot $mirrorDir `
             -DepsFile .\cmake\deps.txt `
             -IncludeNames $mirrorIncludeText
+
+      - name: Save CPU CMake dependency mirror cache
+        if: ${{ success() && steps.cpu_cmake_deps_cache.outputs.cache-primary-key != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}\ort-cmake-deps-mirror
+          key: ${{ steps.cpu_cmake_deps_cache.outputs.cache-primary-key }}
 
       - name: Build CPU shared library
         id: cpu_build
@@ -221,20 +231,24 @@ jobs:
           cache-dependency-path: tools/ci_build/github/windows/python/requirements.txt
 
       - name: Restore CUDA/cuDNN cache
-        uses: actions/cache@v5
+        id: cuda_runtime_cache
+        uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}\ort-yolo-cuda
-          key: ort-yolo-cuda-${{ runner.os }}-cuda-${{ vars.ORT_YOLO_CUDA_VERSION }}-${{ env.ORT_YOLO_DEFAULT_CUDA_VERSION }}-cudnn-${{ vars.ORT_YOLO_CUDNN_VERSION }}-${{ env.ORT_YOLO_DEFAULT_CUDNN_VERSION }}-${{ hashFiles('tools/neonsight_yolo_lite/install_cuda_cudnn_ci.ps1') }}
+          key: ort-yolo-cuda-${{ runner.os }}-cuda-${{ vars.ORT_YOLO_CUDA_VERSION }}-${{ env.ORT_YOLO_DEFAULT_CUDA_VERSION }}-cudnn-${{ vars.ORT_YOLO_CUDNN_VERSION }}-${{ env.ORT_YOLO_DEFAULT_CUDNN_VERSION }}-${{ hashFiles('tools/neonsight_yolo_lite/install_cuda_cudnn_ci.ps1') }}-${{ github.run_id }}
           restore-keys: |
             ort-yolo-cuda-${{ runner.os }}-cuda-${{ vars.ORT_YOLO_CUDA_VERSION }}-${{ env.ORT_YOLO_DEFAULT_CUDA_VERSION }}-cudnn-${{ vars.ORT_YOLO_CUDNN_VERSION }}-${{ env.ORT_YOLO_DEFAULT_CUDNN_VERSION }}-
             ort-yolo-cuda-${{ runner.os }}-
 
       - name: Restore CMake dependency mirror cache
-        uses: actions/cache@v5
+        id: cuda_cmake_deps_cache
+        uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}\ort-cmake-deps-mirror
-          key: ort-cmake-deps-${{ runner.os }}-${{ hashFiles('cmake/deps.txt') }}
+          key: ort-cmake-deps-${{ runner.os }}-${{ hashFiles('cmake/deps.txt') }}-cuda-${{ github.run_id }}
           restore-keys: |
+            ort-cmake-deps-${{ runner.os }}-${{ hashFiles('cmake/deps.txt') }}-cuda-
+            ort-cmake-deps-${{ runner.os }}-${{ hashFiles('cmake/deps.txt') }}-cpu-
             ort-cmake-deps-${{ runner.os }}-
 
       - name: Prepare CUDA/cuDNN environment
@@ -263,6 +277,13 @@ jobs:
             $scriptArgs += @("-CudnnManifestUrl", "${{ vars.ORT_YOLO_CUDNN_MANIFEST_URL }}")
           }
           pwsh -NoProfile -ExecutionPolicy Bypass -File .\tools\neonsight_yolo_lite\install_cuda_cudnn_ci.ps1 @scriptArgs
+
+      - name: Save CUDA/cuDNN cache
+        if: ${{ steps.cuda_env.outcome == 'success' && steps.cuda_runtime_cache.outputs.cache-primary-key != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}\ort-yolo-cuda
+          key: ${{ steps.cuda_runtime_cache.outputs.cache-primary-key }}
 
       - name: Prepare CMake dependency mirror
         if: ${{ steps.cuda_env.outcome == 'success' }}
@@ -293,6 +314,13 @@ jobs:
             -MirrorRoot $mirrorDir `
             -DepsFile .\cmake\deps.txt `
             -IncludeNames $mirrorIncludeText
+
+      - name: Save CUDA CMake dependency mirror cache
+        if: ${{ steps.cuda_env.outcome == 'success' && steps.cuda_cmake_deps_cache.outputs.cache-primary-key != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}\ort-cmake-deps-mirror
+          key: ${{ steps.cuda_cmake_deps_cache.outputs.cache-primary-key }}
 
       - name: Install build Python dependencies
         id: cuda_deps
